@@ -1,0 +1,12 @@
+obj
+bin
+*.dll
+*.exe
+*.db
+!*.Db/
+*.pdb
+*.swp
+.clj-kondo/
+.lsp/
+.cpcache/
+packages/

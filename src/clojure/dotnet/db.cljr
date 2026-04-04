@@ -1,0 +1,75 @@
+(ns clojure.dotnet.db
+  "Async ADO.NET database wrapper.
+   Works with any ADO.NET provider (SQLite, Postgres, SQL Server, etc.)."
+  (:require [clojure.async.task :as t])
+  (:import [System DBNull]
+           [System.Data.Common DbConnection DbCommand DbDataReader]))
+
+(set! *warn-on-reflection* true)
+
+;; ── Connection ───────────────────────────────────────────────────
+
+(defn create-connection
+  "Create and open a database connection.
+   Example: (create-connection SqliteConnection \"Data Source=app.db\")"
+  [connection-type ^String conn-string]
+  (let [^DbConnection conn (System.Activator/CreateInstance connection-type)]
+    (set! (.-ConnectionString conn) conn-string)
+    (.Open conn)
+    conn))
+
+;; ── Internal: result mapping ─────────────────────────────────────
+
+(defn- reader->maps [^DbDataReader reader]
+  (let [col-count (.FieldCount reader)
+        col-names (mapv #(.GetName reader (int %)) (range col-count))]
+    (loop [rows []]
+      (if (.Read reader)
+        (recur (conj rows
+                 (persistent!
+                   (reduce (fn [m i]
+                             (assoc! m (col-names i)
+                               (let [v (.GetValue reader (int i))]
+                                 (if (instance? DBNull v) nil v))))
+                           (transient {})
+                           (range col-count)))))
+        rows))))
+
+;; ── Query execution ──────────────────────────────────────────────
+
+(defn ^:async execute!
+  "Execute SQL. Returns a vector of result maps for queries,
+   or [{\"affected\" N}] for statements."
+  [^DbConnection conn ^String sql]
+  (let [^DbCommand cmd (.CreateCommand conn)]
+    (set! (.-CommandText cmd) sql)
+    (let [^DbDataReader reader (t/await (.ExecuteReaderAsync cmd))
+          results (reader->maps reader)]
+      (.Close reader)
+      (if (seq results)
+        results
+        [{"affected" (.RecordsAffected reader)}]))))
+
+(defn ^:async execute-one!
+  "Execute SQL. Returns the first result map, or nil."
+  [^DbConnection conn ^String sql]
+  (let [results (t/await (execute! conn sql))]
+    (first results)))
+
+;; ── Transactions ─────────────────────────────────────────────────
+
+(defmacro with-transaction
+  "Open a connection, begin a transaction, execute body.
+   Commits on success, rolls back on error. Closes connection.
+   Usage: (with-transaction [conn (create-connection Type cs)] ...)"
+  [[conn-sym conn-expr] & body]
+  `(with-open [conn# ~conn-expr
+               txn# (.BeginTransaction conn#)]
+     (try
+       (let [~conn-sym conn#
+             result# (do ~@body)]
+         (.Commit txn#)
+         result#)
+       (catch Exception e#
+         (.Rollback txn#)
+         (throw e#)))))
