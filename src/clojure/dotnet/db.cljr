@@ -45,7 +45,7 @@
         params (rest sqlvec)
         ^DbCommand cmd (.CreateCommand conn)
         ;; Replace ? with @p0, @p1, etc.
-        indexed-sql (loop [s sql i 0]
+        indexed-sql (loop [^String s sql i 0]
                       (let [idx (.IndexOf s "?")]
                         (if (neg? idx)
                           s
